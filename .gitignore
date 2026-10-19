@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.DS_Store
+# test runs and data stay out of the repo
+*.executed.ipynb
+*.run_report.md
+*.check_report.md
+*.licence_report.md
+style_profile.*
+*.nc
