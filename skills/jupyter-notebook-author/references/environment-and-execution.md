@@ -15,25 +15,29 @@ Supported files: `environment.yml` (conda/mamba), `requirements.txt` (pip), `ren
 ## 1. Create the environment
 
 ```bash
-bash scripts/setup_env.sh <environment-file|python|r> <env-name>
+bash scripts/setup_env.sh <environment-file|python|r> <env-name> [--packages "xarray netcdf4" | --packages-file pkgs.txt]
+bash scripts/setup_env.sh --remove <env-name>        # remove the environment and its kernel after the test
 ```
 
 The script:
 - uses `micromamba`, `mamba` or `conda` if one is available, else Python `venv` + pip (Python only);
 - creates the environment from the file, or a minimal one for `python` or `r`;
+- with `--packages` or `--packages-file`, installs those packages from conda-forge (for R, `ncdf4` becomes `r-ncdf4`). Without an environment file, get the list with `python scripts/make_env.py notebook.ipynb --packages-only > pkgs.txt`;
 - installs `ipykernel` (Python) or `r-irkernel` (R) and registers a Jupyter kernel named `<env-name>`;
-- prints the kernel name to use in the next step.
+- prints `KERNEL=<name>` and `PYTHON=<path>` (Python) or `RSCRIPT=<path>` (R) for the next steps;
+- on failure, prints the solver's own message (full log in `<env-root>/<env-name>.setup.log`).
 
 R needs conda/mamba/micromamba or a system R with IRkernel. If neither exists, tell the author that the R notebook could not be executed here.
 
 ## 2. Run the notebook
 
 ```bash
-python scripts/run_notebook.py notebook.ipynb --kernel <env-name> --out notebook.executed.ipynb --timeout 1200
+python scripts/run_notebook.py notebook.ipynb --kernel <env-name> --out notebook.ipynb --timeout 1200
 ```
 
-- Runs every cell in order with `nbclient`, from the notebook's own folder.
-- Continues after errors so you see all failing cells, and writes a report (`notebook.run_report.md`): per cell the status, run time and error.
+- `--out notebook.ipynb` executes the deliverable in place (the default deliverable is executed). Use another name for a scratch run.
+- Runs every cell in order with `nbclient`, from the notebook's own folder. The kernelspec in the file stays as in the source; the test kernel is named in the report.
+- Continues after errors so you see all failing cells, and writes a report next to `--out` (`notebook.run_report.md`, or `--report PATH`): per cell the status, run time and error.
 - Exit code 0 only if every cell succeeded.
 
 ## 3. When cells fail
@@ -49,24 +53,28 @@ Do not ask the author to paste credentials into the chat. If data access needs c
 ## 4. Generate an environment file (no file given)
 
 ```bash
-python scripts/make_env.py notebook.ipynb --out environment.yml --name <env-name> [--python-env <path-to-env-python>]
+python scripts/make_env.py notebook.ipynb --out environment.yml --name <env-name> [--python-env <path-to-env-python> | --rscript <path-to-env-Rscript>]
 ```
 
-- Collects imports (`import x`, `from x import`) or `library(x)`/`require(x)` calls.
-- Maps import names to package names (for example `sklearn` → `scikit-learn`, `cv2` → `opencv`).
-- Reads installed versions from the test environment if given and pins them (`xarray=2025.6.*`).
+- Collects imports (`import x`, `from x import`) or `library(x)`/`require(x)` calls and `pkg::fun()` in R.
+- Maps import names to package names (for example `sklearn` → `scikit-learn`, `cv2` → `opencv`). Everything comes from conda-forge; only packages conda-forge lacks go under `pip:`.
+- Reads installed versions from the test environment if given and pins them (`xarray=2025.6.*`, `r-ncdf4=1.23.*`).
+- Then rebuild a fresh environment from the generated file (new name) and run the deliverable in it before hand-over.
 - Leaves standard library modules out.
 - Always review the result: the import-to-package mapping is a heuristic.
 
 ## 5. Check package licences
 
 ```bash
-python scripts/check_licences.py notebook.ipynb --python-env <env-python> --target MIT
-python scripts/check_licences.py notebook.ipynb --rscript <env-Rscript> --target MIT   # R
+python scripts/check_licences.py notebook.ipynb --python-env <env-python> --target <licence-from-intake>
+python scripts/check_licences.py notebook.ipynb --rscript <env-Rscript> --target <licence-from-intake>   # R
 ```
 
 - Reads each imported package's licence from the test environment and classifies it (permissive, weak copyleft, strong copyleft, unknown).
 - Exit code 1 if a package needs a decision: copyleft under a permissive target, or an unknown licence. Report these to the author; do not decide for them.
+- Reads the owner's decisions from `licence-decisions.md` next to the notebook (or `--decisions FILE`). Accepted packages show as "decided: accepted" and no longer set the exit code.
+- `--extra pkg1,pkg2` adds packages the notebook needs but does not import (I/O back ends such as `netcdf4`).
+- Writes the report next to the notebook and refuses paths outside the notebook folder or the current folder unless `--force`.
 - It is a first check, not legal advice. Dataset terms of use are not covered.
 
 ## 6. Hand-over

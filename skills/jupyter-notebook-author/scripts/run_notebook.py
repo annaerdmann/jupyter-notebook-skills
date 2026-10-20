@@ -2,10 +2,11 @@
 """Execute a notebook top to bottom in a given kernel and report every failing cell.
 
 Usage:
-    python run_notebook.py NOTEBOOK.ipynb --kernel NAME [--out executed.ipynb] [--timeout 1200]
+    python run_notebook.py NOTEBOOK.ipynb --kernel NAME [--out executed.ipynb] [--report report.md] [--timeout 1200]
 
 Runs from the notebook's folder, continues after errors, writes the executed
-notebook and NOTEBOOK.run_report.md. Exit code 0 only if every cell succeeded.
+notebook and <name>.run_report.md next to it (--out NOTEBOOK.ipynb executes in place).
+Exit code 0 only if every cell succeeded.
 """
 
 import argparse
@@ -24,6 +25,7 @@ def main():
     ap.add_argument("--kernel", required=True)
     ap.add_argument("--out")
     ap.add_argument("--timeout", type=int, default=1200, help="seconds per cell")
+    ap.add_argument("--report", help="run report path (default: next to --out)")
     a = ap.parse_args()
 
     path = Path(a.notebook).resolve()
@@ -56,6 +58,7 @@ def main():
         sys.exit(3)
 
     out = Path(a.out) if a.out else path.with_suffix(".executed.ipynb")
+    # kernelspec stays as in the source (the publication kernel); the test kernel is in the report
     nbformat.write(nb, out)
     failed = [r for r in rows if r[1] != "ok"]
     report = [
@@ -66,7 +69,9 @@ def main():
         "| Cell | Status | Seconds | Error |", "|---|---|---|---|",
     ]
     report += [f"| {i} | {s} | {d:.1f} | {e.replace('|', '/')} |" for i, s, d, e in rows]
-    rep_path = path.with_suffix(".run_report.md")
+    stem = out.name[: -len(".ipynb")] if out.name.endswith(".ipynb") else out.stem
+    stem = stem[: -len(".executed")] if stem.endswith(".executed") else stem
+    rep_path = Path(a.report) if a.report else out.with_name(stem + ".run_report.md")
     rep_path.write_text("\n".join(report) + "\n")
     print("\n".join(report))
     sys.exit(0 if not failed else 1)

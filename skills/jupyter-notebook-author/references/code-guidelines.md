@@ -32,13 +32,23 @@ Sources: "Ten simple rules for writing and sharing computational analyses in Jup
 - Write paths for the published layout: data in `data/` and images in `img/` next to the notebook, as relative paths. Never point to the folder the author handed the inputs over in. For test runs, copy the provided files into `data/` and `img/`.
 - If the notebook downloads data, create the data folder (`Path("data").mkdir(exist_ok=True)`) and skip downloads when the file already exists. Ship data files with the notebook only when the author provides them for that purpose; otherwise download them from the original source.
 - A download step must leave exactly the file the notebook opens: use the name the client returns, or compare the folder before and after; unzip, merge and rename as needed; never pick "the newest file". Print a clear message if the expected file is missing.
-- If a data request cannot be checked against the service, put a visible warning box under the request cell: it is untested, where the keys come from, and how to verify them.
+- If a data request cannot be checked against the service, put a visible warning box under the request cell: it is untested, where the keys come from, and how to verify them. Take the request keys from the author's "Show API request" JSON when given; never guess them.
+
+## Downloads
+
+- Put the download behind the same switch as the credentials (`DOWNLOAD_DATA`). With the switch off, the notebook uses the provided files and says so in one printed line.
+- `hda` 2.x `download()` returns no file name. Find the new files by comparing the folder before and after the download.
+- Unzip, merge and rename to the exact name the notebook opens. Refuse ZIP members with absolute paths or `..` (check before extracting).
+- Delete temporary files (the ZIP, partial downloads) and close every dataset you opened.
+- Print a clear message if the expected file is missing after the download.
+- A download step that did not run in the test (switch off, no credentials, service down) is untested: list it in the hand-over and keep the warning box.
 
 ## Credentials
 
 - Never write usernames, passwords, API keys or tokens into a cell or an output.
 - Read them from the tool's own config file (for example `~/.hdarc`, `~/.cdsapirc`), from environment variables, or with an interactive prompt (`getpass.getpass()` in Python, `askpass::askpass()` or `readline()` in R). Prefer the method the style source uses, but never print a token.
-- Guard interactive prompts and downloads with a switch (for example `DOWNLOAD_DATA = False`) that defaults to off when the data are provided, so "Run all" never blocks.
+- Guard interactive prompts, client creation and downloads with a switch (for example `DOWNLOAD_DATA = False`) that defaults to off when the data are provided, so "Run all" never blocks. `scripts/check_notebook.py` warns about `input()`, `getpass`, `readline()`, `askpass` and `hda.Client()` outside an `if` block or function.
+- Never print a token, not even part of it, and do not display the client object if its representation shows the token. `scripts/check_notebook.py` reports token-like strings in outputs as an ERROR. If the style source prints a token, do not copy that.
 - Tell the reader in Markdown where to get an account and how to store credentials.
 
 ## Plots
@@ -57,9 +67,12 @@ Sources: "Ten simple rules for writing and sharing computational analyses in Jup
 
 ## Licences
 
-- The notebook's licence comes from intake (default MIT). Every package must be compatible with it.
-- Run `scripts/check_licences.py` after the test run. Permissive licences (MIT, BSD, Apache, PSF, ISC, MPL) are fine.
-- GPL/AGPL packages: importing them is usually acceptable for an MIT notebook, but tell the author and let them decide per package; never copy GPL code into the notebook. Record a decision only if the author states it explicitly for that notebook. Name copyleft packages and their licences in one line of the set-up section. Prefer a permissive alternative if one does the job equally well.
+- The notebook's licence is a required intake answer from the author. Never choose or assume it. Every package must be compatible with it.
+- Check compatibility while you choose packages (phase 4), not only after the run. If no compatible package does the job, ask the author before using an incompatible one.
+- Run `scripts/check_licences.py` after the test run. Permissive licences (MIT, BSD, Apache, PSF, ISC, MPL) are fine. A dual licence ("GPL | MIT") counts as its most permissive alternative.
+- Strong copyleft (GPL, AGPL) packages under a permissive notebook licence, and packages with an unknown licence, need an explicit decision by the notebook owner, per package. Record it in `licence-decisions.md` next to the notebook (package, decision, decided by as a role, date, note); `check_licences.py` reads it. Write a row only when the owner said so for this notebook. Never infer a decision from general feedback, never write it on the owner's behalf, and never turn it into a learned rule.
+- Write notes on image and data licences in the licence report below the line `<!-- written by hand -->`; the script keeps that part when it rewrites the report.
+- GPL/AGPL packages: importing them is usually acceptable for a permissively licensed notebook, but tell the author and let them decide per package; never copy GPL code into the notebook. Record a decision only if the author states it explicitly for that notebook. Name copyleft packages and their licences in one line of the set-up section. Prefer a permissive alternative if one does the job equally well.
 - LGPL packages: fine as dependencies; do not copy their code.
 - Unknown licence: look it up (PyPI, CRAN, the repository) and report it.
 - Code copied or adapted from elsewhere keeps its licence and needs attribution in a comment and in the hand-over.

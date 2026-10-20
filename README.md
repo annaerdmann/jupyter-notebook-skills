@@ -6,7 +6,7 @@ Agent Skills that help WEkEO staff create Jupyter notebooks with an AI assistant
 
 | Skill | What it does | Status |
 |---|---|---|
-| [`jupyter-notebook-author`](skills/jupyter-notebook-author/SKILL.md) | Builds a training notebook in Python or R from your storyline, in the style of a template, and runs it in a test environment before hand-over. | 0.2.0, tested in a blind test with three WEkEO notebooks |
+| [`jupyter-notebook-author`](skills/jupyter-notebook-author/SKILL.md) | Builds a training notebook in Python or R from your storyline, in the style of a template, and runs it in a test environment before hand-over. | 0.3.0, tested in a blind test with three WEkEO notebooks; script fixes from that test |
 
 More skills will follow in `skills/`.
 
@@ -16,7 +16,7 @@ More skills will follow in `skills/`.
 WEkEO staff who write training notebooks. You stay the author: you give the storyline (goal, audience, data, sections); the assistant writes the code and the explanatory text and checks that the notebook runs.
 
 ### What happens
-1. **Intake.** The assistant asks for the language (Python or R), a style source, an environment file (optional), the storyline, the output name, whether to deliver the notebook executed, and the licence. It writes nothing before this.
+1. **Intake.** The assistant asks for the language (Python or R), a style source, an environment file (optional), the storyline, the output name, whether to deliver the notebook executed, and the licence under which you will publish it. The licence is required: the skill never assumes one. It writes nothing before this.
 2. **Style.** It reads the style source and shows you the style it will follow.
 3. **Agenda.** It proposes an agenda. You describe each section yourself, or it proposes them for your review.
 4. **Build.** Skeleton, code, text; then it checks every number in the text against the real output.
@@ -46,10 +46,9 @@ Then ask, for example: "Create a training notebook from this storyline."
 
 ### Known limitations
 - HDA downloads were not tested in the blind test (no gateway access); request keys must be checked against "Show API request" in the WEkEO Viewer.
-- `extract_style.py` and `check_notebook.py` misread styles that number sections at heading level 1 (one false "exactly one H1" error).
-- `diff_notebooks.py` pairs cells by position, so it misreports after cells are merged or moved.
-- Phase 7 expects an edited notebook; written feedback works but has no fixed format yet.
-- Copyleft packages (GPL, e.g. `ncdf4` in R) are flagged; the decision stays with the author.
+- The style extractor is a heuristic. It now handles styles that number sections at H1, but the assistant still reads the style source and corrects the profile.
+- Copyleft packages (GPL, e.g. `ncdf4` in R) are flagged until the notebook owner records a decision per package in `licence-decisions.md` next to the notebook.
+- The 0.3.0 script fixes were tested on the blind-test notebooks only, not yet on a new notebook from start to finish.
 
 ## Contributing
 - Report problems and rule proposals as issues in this repository.

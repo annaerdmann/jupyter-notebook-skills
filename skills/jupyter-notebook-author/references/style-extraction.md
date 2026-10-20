@@ -8,7 +8,7 @@ The style of a notebook is everything except the actual content: what comes befo
 python scripts/extract_style.py <source.ipynb> --out style_profile.json
 ```
 
-The script writes `style_profile.json` (machine-readable) and `style_profile.md` (for the author). It is a heuristic. Always read the source notebook yourself as well, and correct the profile where the script got it wrong.
+The script writes `style_profile.json` (machine-readable) and `style_profile.md` (for the author). It is a heuristic. Always read the source notebook yourself as well, and correct the profile where the script got it wrong. Keep the script output as `style_profile.raw.json` and save the corrected version as `style_profile.json`, which `check_notebook.py --style` reads.
 
 ## What the profile contains
 
@@ -16,8 +16,10 @@ The script writes `style_profile.json` (machine-readable) and `style_profile.md`
 |---|---|---|
 | `language` | Kernel language (python, R, …) | Must match the author's choice. If it does not, keep the layout and adapt the code conventions. |
 | `header` | Cells before the first section heading, classified as `image`, `licence`, `title`, `badges`, `navigation`, `prerequisites`, `learning_outcomes`, `contents`, `separator`, `text` | Reproduce the same elements in the same order. Replace content (title, outcomes, links), keep form (bold labels, separators, image paths or URLs). |
-| `sections` | Heading level, numbering pattern, and titles of the main sections | Reuse the pattern (for example "## 1. Title"). Reuse generic sections that fit the storyline (environment set-up, data access, take-home messages, next steps). |
-| `heading_case` | `sentence` or `title` | Follow it in all headings. |
+| `sections` | Heading level, numbering pattern, and titles of the main sections. The section level is the one with the most numbered headings, so a style with "# 1. Introduction" gets `section_level` 1 | Reuse the pattern (for example "## 1. Title"). Reuse generic sections that fit the storyline (environment set-up, data access, take-home messages, next steps). With `section_level` 1, `check_notebook.py` expects an H1 title before the first section instead of exactly one H1. |
+| `back_links` | Section cells that link back to the contents ("Go back to the Table of contents") | Add the same link to each section. |
+| `template_sections` | Sections that document the template itself ("How to use this template") | Do not reproduce them. |
+| `heading_case` | `sentence`, `title` or `mixed` (neither above 80 %) | Follow it in all headings; for `mixed`, read the source and pick the case its main sections use. |
 | `boxes` | How notes and warnings are written (HTML `div` with colours, Bootstrap `alert` classes, MyST admonitions, blockquotes) | Use the same markup and colours for every box. |
 | `footer` | Cells after the last section | Reproduce them unchanged unless they contain notebook-specific links. |
 | `metadata_keys` / `metadata_template` | Notebook-level metadata fields | Fill every field the source fills. Leave a field empty rather than guessing; list empty fields in the hand-over. |

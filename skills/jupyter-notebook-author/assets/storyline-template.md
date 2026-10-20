@@ -21,10 +21,20 @@ After this notebook, the reader can:
 |---|---|---|---|---|
 | | | | | |
 
+**Example API request** (for WEkEO: open the dataset in the WEkEO Viewer, set the subset, click "Show API request" and paste the JSON here exactly as shown):
+
+```json
+
+```
+
+Data files you provide with the notebook (name, what they contain):
+-
+
 ## Sections
 Describe what each section does. "Show" means a printed output or a figure.
 
 1. **<section title>**: <what the code does> → <what it shows> → <what the reader learns>
+   - Expected result (approximate; the assistant checks it against the real output and tells you where it differs):
 2. 
 
 (Or write "Please propose the sections" and the assistant will draft them for your review.)

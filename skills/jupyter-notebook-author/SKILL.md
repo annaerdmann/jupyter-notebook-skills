@@ -3,8 +3,8 @@ name: jupyter-notebook-author
 description: Create an educational Jupyter notebook (Python or R) from an author's storyline, in the style of a given template or example notebook, then execute it in a test environment. Use when someone wants to write, draft or build a tutorial, training or example notebook, or turn a storyline or outline into a notebook. Also use to record feedback after the author edits a notebook the skill created.
 license: MIT
 metadata:
-  version: "0.2.0"
-  stage: "first stage, rules from test session 2026-10-13 added"
+  version: "0.3.0"
+  stage: "first stage, rules and script fixes from test session 2026-10-13"
 ---
 
 # Jupyter notebook author
@@ -30,7 +30,7 @@ Collect everything in `assets/intake-questions.md` in one message. The essential
 - **Environment:** either an environment file the notebook must run in (`environment.yml`, `requirements.txt`, `renv.lock`, `DESCRIPTION`), or "none". If none, you will deliver an environment file at the end.
 - **Storyline:** goal, learning outcomes, audience (prior knowledge), topic, data (which dataset, from where, how it is accessed, credentials needed), and the sections. Offer `assets/storyline-template.md` so the author can fill it in.
 - **Output:** file name and folder, and whether to deliver the notebook executed (default) or with cleared outputs.
-- **Licence** of the notebook. Default: MIT. Every package the notebook uses must be compatible with it (phase 5).
+- **Licence** under which the notebook will be published. **Required: the author must state it.** There is no default, and you never choose or assume one, not even from the style source or the repository. Without an explicit answer, ask again and do not continue. Every package the notebook uses must be compatible with it (phases 4 and 5).
 
 If an answer is missing or vague, ask again. Do not fill gaps with your own ideas. You may suggest options, clearly marked as suggestions.
 
@@ -60,7 +60,7 @@ For B, write a section-by-section proposal (what the code does, which output or 
 Write the notebook with `nbformat` (Python script) or by editing the JSON directly. Follow this order:
 
 1. **Skeleton** from the style profile: header cells, title, prerequisites, learning outcomes, contents, section headings, footer, notebook metadata. Drop template instruction cells.
-2. **Code**, section by section, following `references/code-guidelines.md` and the language section for Python or R. Respect the environment file if one was given: use only packages it contains, or ask before adding one.
+2. **Code**, section by section, following `references/code-guidelines.md` and the language section for Python or R. Respect the environment file if one was given: use only packages it contains, or ask before adding one. Before you use a package, check that its licence fits the notebook's licence; prefer a compatible alternative, and ask the author before using one that does not fit.
 3. **Text** around each code cell, following `references/writing-rules.md`. Each code cell gets a Markdown cell before it that states the step and why it is needed. Start with the action, the reason or the function name, not with "The next cell …". Fill the take-home or summary section with what the reader learned, not with a recap of the steps.
 4. **Fact-check** after the first run (phase 5): open every figure and printed output, then write or correct the interpretation text. Quote a number or a location only if a cell prints it or a figure shows it plainly. If the output contradicts the storyline, follow the output and tell the author.
 
@@ -71,16 +71,17 @@ Never write credentials into the notebook. Read `references/code-guidelines.md`,
 Read `references/environment-and-execution.md`. In short:
 
 ```bash
-# 1. Environment: create it from the given file, or build one and export it later
+# 1. Environment: create it from the given file, or from the notebook's package list
 bash scripts/setup_env.sh <environment-file> <env-name>
-# 2. Run the notebook top to bottom in that environment
-python scripts/run_notebook.py <notebook.ipynb> --kernel <kernel-name> --out <executed.ipynb>
+bash scripts/setup_env.sh python <env-name> --packages-file pkgs.txt   # pkgs.txt from: make_env.py <notebook.ipynb> --packages-only
+# 2. Run the deliverable top to bottom in that environment, in place (report next to it)
+python scripts/run_notebook.py <notebook.ipynb> --kernel <kernel-name> --out <notebook.ipynb>
 # 3. Static checks: style, structure, writing, code hygiene
 python scripts/check_notebook.py <notebook.ipynb> --style <work-dir>/style_profile.json
 # 4. Only if no environment file was given
-python scripts/make_env.py <notebook.ipynb> --out environment.yml
-# 5. Package licences must be compatible with the notebook's licence
-python scripts/check_licences.py <notebook.ipynb> --python-env <env-python> --target MIT   # R: --rscript <env-Rscript>
+python scripts/make_env.py <notebook.ipynb> --out environment.yml --python-env <env-python>   # R: --rscript <env-Rscript>
+# 5. Package licences must be compatible with the notebook's licence; owner decisions in licence-decisions.md
+python scripts/check_licences.py <notebook.ipynb> --python-env <env-python> --target <licence-from-intake>   # R: --rscript <env-Rscript>
 ```
 
 If no environment file was given, rebuild a fresh environment from the generated `environment.yml` and run the notebook again there. If a given environment file does not resolve, propose a minimal fix to the author; once approved, apply it to the delivered file, rebuild and run again.
@@ -93,14 +94,19 @@ Give the author:
 
 - the notebook, executed with all outputs unless the author asked for cleared outputs at intake, with its data in `data/` and images in `img/` next to it,
 - the environment file (given or generated),
-- the check report, execution report and licence report,
+- the check report, execution report and licence report (with `licence-decisions.md` if the owner decided on copyleft packages),
 - a short list of anything you were unsure about or could not test.
 
 ### Phase 7: Learn from the author's edits
 
-When the author edits a notebook you created and gives you the edited version, follow `references/feedback-loop.md`:
+When the author gives feedback, follow `references/feedback-loop.md`:
 
-1. Run `python scripts/diff_notebooks.py <original.ipynb> <edited.ipynb>`.
+- **Edited notebook:** run `python scripts/diff_notebooks.py <original.ipynb> <edited.ipynb>`.
+- **Written list of requests:** keep `roundN/` unchanged and build `roundN+1/` next to it; apply the requests; run phases 5 and 6 again; write `changes.md` (one row per request: request, before, after, cells); run `diff_notebooks.py` on the two rounds for the record.
+
+Then:
+
+1. Classify each change as style, code or text.
 2. Turn each change into a general rule ("Use `xarray.open_dataset` with `chunks={}` for files above 1 GB"), not a one-off fact.
 3. Show the proposed rules to the author and ask which to keep. Never record a rule the author has not confirmed.
 4. Append confirmed rules to `references/learned-rules.md`, under style, code or text.
@@ -109,7 +115,7 @@ Read `references/learned-rules.md` at the start of every session. Its rules over
 
 ## Checkpoints (stop and wait for the author)
 
-1. After intake, if anything is missing.
+1. After intake, if anything is missing. Always if the licence is missing.
 2. After the style summary.
 3. After the agenda, and after the choice of A or B.
 4. After the section-by-section proposal (option B).

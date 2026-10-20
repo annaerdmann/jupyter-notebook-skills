@@ -14,7 +14,7 @@ Ask all of these in one message before writing anything. Mark which answers are 
    - Data: which dataset(s), from where, how they are accessed, and whether credentials are needed.
    - Sections: what each section should do and show. If you prefer, I can propose this after we agree on the agenda.
 5. **Output:** file name and folder for the notebook. Should I deliver it executed with outputs (default) or with outputs cleared?
-6. **Licence:** which licence should the notebook have? Default: MIT. I will check that every package it uses is compatible.
+6. **Licence (required, no default):** under which licence will the notebook be published (for example MIT, Apache-2.0, CC-BY-4.0)? I cannot start without your answer. I will choose packages that fit it and check every package before hand-over.
 
 ## Optional
 7. Length or time limit (for example "about 20 minutes to work through").

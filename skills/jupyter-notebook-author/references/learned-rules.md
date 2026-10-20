@@ -11,6 +11,7 @@ Format: `- YYYY-MM-DD – <rule in the imperative>. Example: <one line>.`
 
 ## Code
 
+- 2026-10-19 – Ask the author under which licence the notebook will be published, before writing anything; never assume a default. Choose only packages that fit that licence, and run the licence check before hand-over. Example: "Licence?" is a required intake answer; GPL packages in an MIT notebook need the author's explicit OK.
 - 2026-10-14 – Make a download leave exactly the file the notebook opens. Example: compare the folder before and after, then unzip and rename.
 - 2026-10-14 – Take packages from conda-forge first; rebuild the environment from the delivered file and run in it. Example: `hda` from conda-forge, no `pip:` section.
 - 2026-10-14 – Mark a data request that could not be checked with a visible warning box. Example: "Untested: compare the keys with Show API request in the WEkEO Viewer."

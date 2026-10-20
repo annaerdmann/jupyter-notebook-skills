@@ -18,6 +18,9 @@ import nbformat
 
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$", re.M)
 IMG_RE = re.compile(r"!\[[^\]]*\]\(([^)]+)\)|<img[^>]+src=[\"']([^\"']+)", re.I)
+NUMBERED_RE = re.compile(r"^\d+(\.\d+)*[.)]?\s")
+BACK_LINK_RE = re.compile(r"\]\(#[^)]*(contents|toc|top)[^)]*\)|href=[\"']#[^\"']*(contents|toc|top)", re.I)
+TEMPLATE_HEADING_RE = re.compile(r"how to use (this|the) template|use of (headers|headings)|template (instructions|guide)", re.I)
 INSTRUCTION_RE = re.compile(
     r"(this (block|section|cell|template) (is|should|can)|\[H[1-6]\]|should be removed|"
     r"please (add|insert|fill|replace|revisit)|insert here|to be discussed|todo)",
@@ -59,8 +62,16 @@ def classify_header_cell(text):
         kinds.append("prerequisites")
     if re.search(r"learning (outcome|objective)|you will (learn|know|be able)", low):
         kinds.append("learning_outcomes")
-    if re.search(r"\bcontents\b|table of contents|\boutline\b", low):
+    first = low.splitlines()[0] if low else ""
+    headings = " ".join(m.group(2) for m in HEADING_RE.finditer(low))
+    if re.search(r"\bcontents\b|\boutline\b", headings + " " + first) and not BACK_LINK_RE.search(first):
         kinds.append("contents")
+    if BACK_LINK_RE.search(t) and "contents" not in kinds:
+        kinds.append("back_link")
+    if re.search(r"\b(level|difficulty)\s*:|\b(beginner|intermediate|advanced)\b", low) and len(t) < 300:
+        kinds.append("level_label")
+    if re.search(r"^\W*(general )?notes?\b", first):
+        kinds.append("notes")
     if re.fullmatch(r"(<hr\s*/?>|---|\*\*\*)", t, re.I):
         kinds.append("separator")
     return kinds or ["text"]
@@ -74,7 +85,8 @@ def heading_case(titles):
         words_title += sum(1 for w in words if w[0].isupper() and not w.isupper())
     if not words_total:
         return "unknown"
-    return "title" if words_title / words_total > 0.5 else "sentence"
+    share = words_title / words_total
+    return "title" if share > 0.8 else "sentence" if share < 0.2 else "mixed"
 
 
 def box_styles(md_texts):
@@ -134,7 +146,6 @@ def extract(path):
         or nb.metadata.get("language_info", {}).get("name", "unknown")
     )
 
-    # first H2 (or H1 if the notebook has no H2) marks the end of the header block
     def level_of(cell):
         if cell.cell_type != "markdown":
             return None
@@ -142,10 +153,22 @@ def extract(path):
         return len(m.group(1)) if m else None
 
     levels = [level_of(c) for c in cells]
-    section_level = 2 if 2 in levels else 1
-    first_section = next((i for i, lv in enumerate(levels) if lv == section_level), len(cells))
-    if section_level == 1:  # skip the title
-        first_section = next((i for i, lv in enumerate(levels) if lv == 1 and i > first_section), len(cells))
+    # section level: the level with the most numbered headings ("1. Introduction");
+    # without numbers, the first H2 (or H1 if the notebook has no H2) starts the sections
+    numbered = {}
+    for i, c in enumerate(cells):
+        if c.cell_type == "markdown":
+            for m in HEADING_RE.finditer(source(c)):
+                if NUMBERED_RE.match(m.group(2).strip()):
+                    numbered.setdefault(len(m.group(1)), []).append(i)
+    if numbered and max(len(v) for v in numbered.values()) >= 2:
+        section_level = max(numbered, key=lambda lv: (len(numbered[lv]), -lv))
+        first_section = numbered[section_level][0]
+    else:
+        section_level = 2 if 2 in levels else 1
+        first_section = next((i for i, lv in enumerate(levels) if lv == section_level), len(cells))
+        if section_level == 1:  # skip the title
+            first_section = next((i for i, lv in enumerate(levels) if lv == 1 and i > first_section), len(cells))
 
     instruction_cells, header = [], []
     for i, c in enumerate(cells):
@@ -162,16 +185,25 @@ def extract(path):
         t = source(c)
         header.append({"index": i, "kinds": classify_header_cell(t), "text": t.strip()[:400]})
 
-    sections = []
+    sections, template_sections = [], []
+    in_template = False  # subsections of a template documentation section belong to it
     for i, c in enumerate(cells):
         if c.cell_type == "markdown" and i not in instr_idx:
             for m in HEADING_RE.finditer(source(c)):
                 lvl = len(m.group(1))
-                if lvl <= section_level + 1 and i >= first_section:
-                    sections.append({"index": i, "level": lvl, "title": m.group(2).strip()})
+                if section_level <= lvl <= section_level + 1 and i >= first_section:
+                    title = m.group(2).strip()
+                    if lvl == section_level:
+                        in_template = bool(TEMPLATE_HEADING_RE.search(title))
+                    if in_template or TEMPLATE_HEADING_RE.search(title):
+                        template_sections.append({"index": i, "title": title})
+                    else:
+                        sections.append({"index": i, "level": lvl, "title": title})
     main_titles = [s["title"] for s in sections if s["level"] == section_level]
     numbering = "numbered (e.g. '1. Title')" if main_titles and sum(
-        bool(re.match(r"^\d+[.)]?\s", t)) for t in main_titles) >= len(main_titles) / 2 else "unnumbered"
+        bool(NUMBERED_RE.match(t)) for t in main_titles) >= len(main_titles) / 2 else "unnumbered"
+    h1_count = sum(1 for c in cells if c.cell_type == "markdown" for m in HEADING_RE.finditer(source(c)) if m.group(1) == "#")
+    back_links = sum(1 for i, c in enumerate(cells) if c.cell_type == "markdown" and i >= first_section and BACK_LINK_RE.search(source(c)))
 
     # footer: markdown cells after the last code cell that are not headings-only
     last_code = max((i for i, c in enumerate(cells) if c.cell_type == "code"), default=-1)
@@ -204,7 +236,10 @@ def extract(path):
         "header": header,
         "section_level": section_level,
         "section_numbering": numbering,
+        "h1_count": h1_count,
+        "back_links": back_links,
         "sections": sections,
+        "template_sections": template_sections,
         "heading_case": heading_case([s["title"] for s in sections]),
         "boxes": box_styles([source(c) for c in md]),
         "footer": footer,
@@ -227,7 +262,13 @@ def to_markdown(p):
     out = [f"# Style profile: `{Path(p['source']).name}`", ""]
     out.append(f"- **Language / kernel:** {p['language']} / {p['kernel']}")
     out.append("- **Header (in order):** " + " → ".join("+".join(h["kinds"]) for h in p["header"]))
-    out.append(f"- **Sections:** level H{p['section_level']}, {p['section_numbering']}, {p['heading_case']} case")
+    out.append(f"- **Sections:** level H{p['section_level']}, {p['section_numbering']}, {p['heading_case']} case; "
+               f"{p['h1_count']} H1 headings in total")
+    if p["back_links"]:
+        out.append(f"- **Back links:** {p['back_links']} section cells link back to the contents")
+    if p["template_sections"]:
+        out.append("- **Template documentation sections (not part of the pattern):** "
+                   + ", ".join(s["title"] for s in p["template_sections"]))
     for s in p["sections"]:
         out.append(f"  - {'  ' * (s['level'] - p['section_level'])}{s['title']}")
     out.append(f"- **Boxes:** {', '.join(p['boxes']) or 'none found'}")

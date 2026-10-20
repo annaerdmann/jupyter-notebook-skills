@@ -5,8 +5,9 @@ Usage:
     python make_env.py NOTEBOOK.ipynb [--out environment.yml] [--name NAME]
                        [--python-env PATH_TO_ENV_PYTHON] [--python 3.11]
 
-Python: collects `import x` / `from x import`; R: `library(x)` / `require(x)`.
-With --python-env, pins versions installed in that environment (major.minor).
+Python: collects `import x` / `from x import`; R: `library(x)`, `require(x)` and `pkg::fun`.
+With --python-env (or --rscript for R), pins versions installed in that environment (major.minor).
+With --packages-only, prints one package per line (for `setup_env.sh --packages`).
 The import-to-package mapping is a heuristic: review the result.
 """
 
@@ -28,8 +29,9 @@ PY_MAP = {
     "ipywidgets": "ipywidgets", "hda": "hda", "eumdac": "eumdac", "cdsapi": "cdsapi",
     "copernicusmarine": "copernicusmarine", "rioxarray": "rioxarray", "shapely": "shapely",
 }
-# packages only on PyPI (go under pip:)
-PIP_ONLY = {"hda", "eocanvas"}
+# packages only on PyPI (go under pip:); everything else comes from conda-forge
+PIP_ONLY = {"eocanvas"}
+R_BASE = {"base", "stats", "utils", "graphics", "grDevices", "methods", "datasets", "tools", "grid", "parallel", "IRkernel"}
 STDLIB = set(getattr(sys, "stdlib_module_names", ())) | {"__future__"}
 
 
@@ -50,6 +52,20 @@ def python_imports(code):
     return mods
 
 
+def r_packages(code):
+    pkgs = set(re.findall(r"\b(?:library|require|requireNamespace)\(\s*['\"]?([\w.]+)", code))
+    pkgs |= set(re.findall(r"\b([A-Za-z][\w.]*):::?[A-Za-z_.]", code))
+    return sorted(p for p in pkgs if p not in R_BASE)
+
+
+def r_version(rscript, pkg):
+    if not rscript:
+        return None
+    out = subprocess.run([rscript, "-e", f"cat(tryCatch(as.character(packageVersion('{pkg}')), error=function(e) ''))"],
+                         capture_output=True, text=True).stdout.strip()
+    return out or None
+
+
 def installed_version(python, dist):
     if not python:
         return None
@@ -65,6 +81,8 @@ def main():
     ap.add_argument("--name")
     ap.add_argument("--python-env", help="python executable of the test environment, to pin versions")
     ap.add_argument("--python", default="3.11")
+    ap.add_argument("--rscript", help="Rscript of the test environment, to pin R package versions")
+    ap.add_argument("--packages-only", action="store_true", help="print package names only, one per line")
     a = ap.parse_args()
 
     nb = nbformat.read(a.notebook, as_version=4)
@@ -74,8 +92,10 @@ def main():
     conda, pip = [], []
 
     if lang == "r":
-        pkgs = sorted(set(re.findall(r"\b(?:library|require|requireNamespace)\(\s*['\"]?([\w.]+)", code)))
-        conda = ["r-base", "r-irkernel"] + [f"r-{p.lower()}" for p in pkgs]
+        conda = ["r-base", "r-irkernel"]
+        for p in r_packages(code):
+            ver = r_version(a.rscript, p)
+            conda.append(f"r-{p.lower()}" + (f"={'.'.join(ver.split('.')[:2])}.*" if ver else ""))
     else:
         conda = [f"python={a.python}", "ipykernel"]
         for mod in sorted(python_imports(code)):
@@ -101,6 +121,11 @@ def main():
                 conda.append(pkg + (f"={'.'.join(ver.split('.')[:2])}.*" if ver else "") + "  # I/O backend (inferred)")
         if pip:
             conda.append("pip")
+
+    if a.packages_only:
+        skip = ("python=", "ipykernel", "pip", "r-base", "r-irkernel")
+        print("\n".join(d.split("  #")[0].split("=")[0] for d in conda + pip if not d.startswith(skip)))
+        return
 
     lines = [f"name: {name}", "channels:", "  - conda-forge", "dependencies:"]
     lines += [f"  - {d}" for d in conda]
