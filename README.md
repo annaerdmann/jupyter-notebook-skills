@@ -7,7 +7,7 @@ Agent Skills that help WEkEO staff create Jupyter notebooks with an AI assistant
 | Skill | What it does | Status |
 |---|---|---|
 | [`jupyter-notebook-author`](skills/jupyter-notebook-author/SKILL.md) | Builds a training notebook in Python or R from your storyline, in the style of a template, and runs it in a test environment before hand-over. | 0.3.0, tested in a blind test with three WEkEO notebooks; script fixes from that test |
-| [`automated-notebook-test`](skills/automated-notebook-test/SKILL.md) | Runs `notebook-test` on notebook repositories, reports which notebooks fail and why, and, if asked, fixes failing notebooks one by one in an uncommitted branch. | 0.1.0, first test on `wekeo4data` (2026-10-22) |
+| [`automated-notebook-test`](skills/automated-notebook-test/SKILL.md) | Runs `notebook-test` on notebook repositories (run mode) or starts from existing reports such as the weekly local and WEkEO JupyterHub runs (report mode), reports which notebooks fail and why, and fixes failing notebooks one by one in an uncommitted branch, for one PR per repository after review. | 0.2.0: run mode tested on `wekeo4data` (2026-10-22), report mode added (2026-11-02) |
 
 More skills will follow in `skills/`.
 

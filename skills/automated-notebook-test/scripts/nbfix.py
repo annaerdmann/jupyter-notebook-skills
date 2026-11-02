@@ -10,8 +10,9 @@ It never commits, pushes or opens pull requests.
 
 Subcommands (run `nbfix.py SUBCOMMAND -h` for options):
     setup-check   Python, notebook-test, git, credential files, clean working trees
-    baseline      full run of all notebooks with notebook-test; starts the state file
-    triage        sort failing notebooks into "fix" and "not fixable"
+    baseline      full run of all notebooks with notebook-test; starts the state file (run mode)
+    from-reports  starts the state file from existing notebook-test reports, without running (report mode)
+    triage       sort failing notebooks into "fix" and "not fixable"
     branch        create the fix branch in every repository that has a notebook to fix (no commit)
     rerun         rerun one notebook after a fix and record the try (at most --max-tries)
     mark          record that a notebook cannot be fixed, with the reason
@@ -52,6 +53,12 @@ IGNORED = {"follow_on"}
 DEFAULT_MAX_TRIES = 5
 STATE = "fix-state.json"
 CREDENTIAL_FILES = ["~/.hdarc", "~/.cdsapirc", "~/.ecmwfdatastoresrc", "~/.netrc", "~/.eumdac/credentials"]
+# Report mode: where a report ran (the `platform` field of notebook-test reports).
+LOCAL, JH = "local", "wekeo-jupyterhub"
+FIX_BRANCH_PREFIX = "notebook-test-fixes/"
+JH_UNVERIFIED_HEADING = "Not yet verified on the WEkEO JupyterHub (checked by the next weekly JH run)"
+# Verdicts after which a notebook is not rerun.
+DONE = ("not_fixable", "gave_up", "fixed", "fixed_unverified_jh", "skipped_open_pr", "no_open_issue")
 
 
 # ---------------------------------------------------------------- helpers
@@ -117,13 +124,13 @@ def describe(result):
             f"{(e.get('error_value') or '')[:300]}\n      {tb}")
 
 
-def copy_report(json_path, out):
+def copy_report(json_path, out, prefix=""):
     dest = Path(out) / "tool-reports"
     dest.mkdir(parents=True, exist_ok=True)
     for p in (Path(json_path), Path(json_path).with_suffix(".md")):
         if p.is_file():
-            shutil.copy2(p, dest / p.name)
-    return str(dest / Path(json_path).name)
+            shutil.copy2(p, dest / (prefix + p.name))
+    return str(dest / (prefix + Path(json_path).name))
 
 
 def test_root(state, nb):
@@ -239,6 +246,243 @@ def cmd_baseline(a):
     return 0 if r.returncode in (0, 1) else r.returncode
 
 
+# ---------------------------------------------------------------- from-reports
+
+def report_platform(path, data, override=None):
+    """`platform` of a report: the override, the report's own field, else guessed from the path."""
+    if override:
+        return override
+    if data.get("platform"):
+        return data["platform"]
+    return JH if "jupyterhub" in str(Path(path).resolve()).lower() else LOCAL
+
+
+def read_report(path):
+    try:
+        data = json.loads(Path(path).read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get("repos"), list) or "started_at" not in data:
+        return None
+    return data
+
+
+def latest_reports_in(folder):
+    """The newest report per platform and repository below `folder` (e.g. a clone of the results repo)."""
+    newest = {}
+    for p in sorted(Path(folder).expanduser().rglob("*.json")):
+        if any(x.startswith(".") for x in p.relative_to(Path(folder).expanduser()).parts):
+            continue
+        data = read_report(p)
+        if data is None:
+            continue
+        group = (report_platform(p, data), tuple(sorted(r["repo"] for r in data["repos"])))
+        if group not in newest or data["started_at"] > newest[group][1]["started_at"]:
+            newest[group] = (p, data)
+    return [p for p, _ in newest.values()]
+
+
+def github_slug(url):
+    m = re.match(r"^(?:https?://|ssh://)?(?:git@)?github\.com[:/]([^/]+)/([^/]+?)(?:\.git)?/?$", url or "")
+    return f"{m.group(1)}/{m.group(2)}" if m else None
+
+
+def gh_ready():
+    if not shutil.which("gh"):
+        print("  WARNING: gh is not installed; open fix PRs are not checked", flush=True)
+        return False
+    if sh(["gh", "auth", "status"], check=False).returncode != 0:
+        print("  WARNING: gh is not logged in; open fix PRs are not checked", flush=True)
+        return False
+    return True
+
+
+def open_fix_prs(slug):
+    """[(PR URL, {changed paths})] of open PRs in `slug` whose branch starts with notebook-test-fixes/."""
+    r = sh(["gh", "pr", "list", "--repo", slug, "--state", "open", "--limit", "200",
+            "--json", "headRefName,files,url"], check=False)
+    if r.returncode != 0:
+        print(f"  WARNING: could not list the open PRs of {slug}: {r.stderr.strip()[:200]}", flush=True)
+        return []
+    return [(pr["url"], {f["path"] for f in pr.get("files") or []}) for pr in json.loads(r.stdout or "[]")
+            if pr.get("headRefName", "").startswith(FIX_BRANCH_PREFIX)]
+
+
+def default_branch(root):
+    r = git(root, "symbolic-ref", "--short", "refs/remotes/origin/HEAD", check=False)
+    return r.stdout.strip().removeprefix("origin/") if r.returncode == 0 else None
+
+
+def prepare_clone(name, url, given, workdir):
+    """Path of the clone of `name` at its default branch head: the given clone, else WORK/repos/NAME."""
+    if given:
+        root = Path(given).expanduser().resolve()
+        if not git_root(root / "x"):
+            raise SystemExit(f"--repo {name}={given} is not a git repository")
+        note = ""
+        cur, default = git(root, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip(), default_branch(root)
+        if default and cur != default:
+            note = f"the given clone is on {cur}, not on the default branch {default}"
+        return root, note
+    if not url:
+        raise SystemExit(f"the report has no URL for {name}; give a local clone with --repo {name}=PATH")
+    root = Path(workdir) / "repos" / name
+    if not root.exists():
+        root.parent.mkdir(parents=True, exist_ok=True)
+        print(f"  cloning {url}", flush=True)
+        sh(["git", "clone", "--quiet", url, str(root)])
+        return root, ""
+    if git(root, "status", "--porcelain", "--untracked-files=no").stdout.strip():
+        raise SystemExit(f"{root} has uncommitted changes; commit, stash or remove it first")
+    default = default_branch(root) or "main"
+    git(root, "fetch", "--quiet", "origin")
+    git(root, "switch", "--quiet", default)
+    git(root, "merge", "--quiet", "--ff-only", f"origin/{default}")
+    return root, ""
+
+
+def load_issues(path):
+    data = json.loads(Path(path).expanduser().read_text())
+    issues = data.get("issues", data) if isinstance(data, dict) else data
+    return [i for i in issues if not i.get("closed_at")]
+
+
+def choose_driver(platforms):
+    """(platform whose error drives triage, failing platforms, JH-only?) from the newest result per platform.
+
+    JH-only: fails on the WEkEO JupyterHub and not locally, or locally only at a cell that needs a JupyterHub
+    service (label `platform`), which a local run can never pass."""
+    failing = sorted(p for p, r in platforms.items() if r["status"] != "ok")
+    if not failing:
+        return None, [], False
+    local = platforms.get(LOCAL)
+    local_stop_only = bool(local) and local["status"] != "ok" and local["first_label"] == "platform"
+    jh_only = JH in failing and (LOCAL not in failing or (local_stop_only and platforms[JH]["first_label"] != "platform"))
+    driver = JH if jh_only else (LOCAL if LOCAL in failing else failing[0])
+    return driver, failing, jh_only
+
+
+def cmd_from_reports(a):
+    out = Path(a.out).expanduser().resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    workdir = Path(a.workdir).expanduser().resolve()
+    if (out / STATE).exists() and not a.force:
+        raise SystemExit(f"{out / STATE} exists; use a new --out folder (or --force to start over)")
+    paths = [(Path(p).expanduser(), None) for p in a.report or []]
+    paths += [(p, None) for p in latest_reports_in(a.reports_dir)] if a.reports_dir else []
+    for spec in a.platform or []:
+        name, _, p = spec.partition("=")
+        if not p:
+            raise SystemExit(f"--platform {spec}: use NAME=PATH")
+        paths = [x for x in paths if x[0].resolve() != Path(p).expanduser().resolve()]
+        paths.append((Path(p).expanduser(), name))
+    if not paths:
+        raise SystemExit("no reports: give --report, --reports-dir or --platform NAME=PATH")
+    given = {}
+    for spec in a.repo or []:
+        name, _, p = spec.partition("=")
+        if not p:
+            raise SystemExit(f"--repo {spec}: use NAME=PATH")
+        given[name] = p
+
+    state = {
+        "created": now(), "mode": "report", "out": str(out), "workdir": str(workdir), "profile": a.profile,
+        "fixes": "yes", "env_fixes": a.env_fixes, "max_tries": a.max_tries,
+        "input_reports": [], "tool_reports": [], "sources": {}, "repos": {}, "notebooks": {},
+    }
+    latest = {}  # (key, platform) -> (started_at, result, repo entry, copied report)
+    for p, override in paths:
+        data = read_report(p)
+        if data is None:
+            raise SystemExit(f"{p} is not a notebook-test report")
+        plat = report_platform(p, data, override)
+        copied = copy_report(p, out, prefix=f"{plat}-")
+        state["input_reports"].append({"path": str(p.resolve()), "platform": plat, "started_at": data["started_at"],
+                                       "copy": copied})
+        state["tool_reports"].append(copied)
+        for repo in data["repos"]:
+            src = state["sources"].setdefault(repo["repo"], {"url": repo.get("url"), "report_commits": {}})
+            src["url"] = src["url"] or repo.get("url")
+            prev = src["report_commits"].get(plat)
+            if not prev or data["started_at"] > prev["started_at"]:
+                src["report_commits"][plat] = {"commit": repo.get("commit"), "started_at": data["started_at"]}
+            for res in repo["results"]:
+                k = (nb_key(repo["repo"], res["notebook"]), plat)
+                if k not in latest or data["started_at"] > latest[k][0]:
+                    latest[k] = (data["started_at"], res, repo, copied)
+
+    print(f"{len(paths)} report(s), {len(state['sources'])} repository(ies)", flush=True)
+    for name, src in state["sources"].items():
+        root, note = prepare_clone(name, src["url"], given.get(name), workdir)
+        head = git(root, "rev-parse", "HEAD").stdout.strip()
+        differs = sorted(p for p, c in src["report_commits"].items() if c["commit"] and c["commit"] != head)
+        src.update({"path": str(root), "head": head, "note": note,
+                    "head_differs_from": differs})
+        print(f"  {name}: {root} at {head[:7]}"
+              + (f" (not the commit of the {', '.join(differs)} report)" if differs else "")
+              + (f"; {note}" if note else ""), flush=True)
+
+    # notebook-test-config.yml is what rerun uses to find the folder notebook-test runs a notebook in.
+    cfg = {"profile": a.profile, "workdir": str(workdir), "kernel": "auto",
+           "repos": [{"path": s["path"], "environments": "build"} for s in state["sources"].values()]}
+    (out / "notebook-test-config.yml").write_text(yaml.safe_dump(cfg, sort_keys=False))
+
+    by_nb = {}
+    for (key, plat), (started, res, repo, copied) in latest.items():
+        by_nb.setdefault(key, {})[plat] = {
+            "status": res["status"], "first_label": (first_error(res) or {}).get("label"),
+            "labels": res.get("labels", {}), "error": describe(res), "started_at": started,
+            "commit": repo.get("commit"), "report": copied,
+            "notebook_id": res.get("notebook_id"), "repo": repo["repo"], "notebook": res["notebook"],
+        }
+    issues = load_issues(a.issues) if a.issues else None
+    prs = {}
+    check_prs = gh_ready()
+    for key, platforms in sorted(by_nb.items()):
+        any_r = next(iter(platforms.values()))
+        name, rel = any_r["repo"], any_r["notebook"]
+        src = state["sources"][name]
+        nb_path = Path(src["path"]) / rel
+        driver, failing, jh_only = choose_driver(platforms)
+        d = platforms[driver] if driver else None
+        nb = {
+            "path": str(nb_path.resolve()), "repo": name, "git_root": str(git_root(nb_path) or ""),
+            "baseline": "ok" if not failing else "error",
+            "baseline_labels": d["labels"] if d else {},
+            "baseline_error": f"[{driver}] {d['error']}" if d else "passed",
+            "baseline_first_label": d["first_label"] if d else None,
+            "platforms": {p: {k: v for k, v in r.items() if k not in ("repo", "notebook", "notebook_id")}
+                          for p, r in sorted(platforms.items())},
+            "failing_platforms": failing, "jh_only": jh_only,
+            "verdict": "passed" if not failing else "pending", "reason": "", "tries": [], "env_rerun_done": False,
+        }
+        state["notebooks"][key] = nb
+        if not failing:
+            continue
+        if not nb_path.is_file():
+            nb["verdict"], nb["reason"] = "not_fixable", f"not in {name} at {src['head'][:7]} any more (moved or removed)"
+            continue
+        if issues is not None:
+            ids = {r["notebook_id"] for r in platforms.values() if r["notebook_id"]}
+            mine = [i for i in issues if i.get("notebook_id") in ids or (i.get("repo"), i.get("notebook")) == (name, rel)]
+            if not mine:
+                nb["verdict"], nb["reason"] = "no_open_issue", "no open issue in the given issue list"
+                continue
+            nb["issues"] = [i.get("id") for i in mine]
+        slug = github_slug(src["url"])
+        if check_prs and slug:
+            if slug not in prs:
+                prs[slug] = open_fix_prs(slug)
+            hit = next((u for u, files in prs[slug] if rel in files), None)
+            if hit:
+                nb["verdict"], nb["reason"], nb["pr_url"] = "skipped_open_pr", f"open fix PR {hit} already changes it", hit
+    save_state(out, state)
+    n_fail = sum(nb["baseline"] != "ok" for nb in state["notebooks"].values())
+    print(f"\n{len(state['notebooks']) - n_fail} of {len(state['notebooks'])} notebooks passed on every platform "
+          f"they were tested on. State: {out / STATE}\nNext: nbfix.py triage --out {out}")
+    return 0
+
+
 # ---------------------------------------------------------------- triage
 
 def classify(state, nb):
@@ -253,30 +497,44 @@ def classify(state, nb):
 
 def cmd_triage(a):
     state = load_state(a.out)
-    report = json.loads(Path(state["baseline_report"]).read_text())
-    by_key = {nb_key(r["repo"], res["notebook"]): res for r in report["repos"] for res in r["results"]}
-    fix, nofix, passed = [], [], []
+    by_key = {}
+    if state.get("mode") != "report":
+        report = json.loads(Path(state["baseline_report"]).read_text())
+        by_key = {nb_key(r["repo"], res["notebook"]): res for r in report["repos"] for res in r["results"]}
+    fix, nofix, skipped, passed = [], [], [], []
     for key, nb in state["notebooks"].items():
         if nb["baseline"] == "ok":
             passed.append(key)
             continue
-        e = first_error(by_key[key])
-        nb["baseline_first_label"] = e.get("label") if e else None
+        if key in by_key:
+            e = first_error(by_key[key])
+            nb["baseline_first_label"] = e.get("label") if e else None
         if nb["verdict"] == "pending":
             kind, reason = classify(state, nb)
             if kind == "not_fixable":
                 nb["verdict"], nb["reason"] = "not_fixable", reason
-        (fix if nb["verdict"] == "pending" else nofix).append(key)
+        if nb["verdict"] in ("skipped_open_pr", "no_open_issue"):
+            skipped.append(key)
+        else:
+            (fix if nb["verdict"] == "pending" else nofix).append(key)
     save_state(a.out, state)
-    print(f"Passed in the baseline ({len(passed)}), never rerun:")
+    where = "on every platform it was tested on" if state.get("mode") == "report" else "in the baseline"
+    print(f"Passed {where} ({len(passed)}), never rerun:")
     for k in passed:
         print(f"  ✔ {k}")
     print(f"\nNot fixable ({len(nofix)}):")
     for k in nofix:
         print(f"  ✖ {k}: {state['notebooks'][k]['reason']}")
+    if skipped:
+        print(f"\nNot worked on ({len(skipped)}):")
+        for k in skipped:
+            print(f"  – {k}: {state['notebooks'][k]['reason']}")
     print(f"\nTo fix ({len(fix)}){'' if state['fixes'] == 'yes' else ' (fixes not requested: report only)'}:")
     for k in fix:
-        print(f"  • {k}\n      {state['notebooks'][k]['baseline_error']}")
+        nb = state["notebooks"][k]
+        jh = ("  [fails only on the WEkEO JupyterHub: fix, rerun locally, verdict 'fixed, not verified on the "
+              "WEkEO JupyterHub']") if nb.get("jh_only") else ""
+        print(f"  • {k}{jh}\n      {nb['baseline_error']}")
     return 0
 
 
@@ -374,10 +632,10 @@ def cmd_rerun(a):
     if nb["baseline"] == "ok":
         env = env_changed(state, nb)
         if not (a.after_env_change and env and not nb["env_rerun_done"]):
-            raise SystemExit(f"{key} passed in the baseline and is not rerun"
+            raise SystemExit(f"{key} passed{'' if state.get('mode') == 'report' else ' in the baseline'} and is not rerun"
                              + ("" if env else " (its environment file is unchanged)"))
         after_env = True
-    elif nb["verdict"] in ("not_fixable", "gave_up", "fixed"):
+    elif nb["verdict"] in DONE:
         raise SystemExit(f"{key} is already '{nb['verdict']}'; not rerun")
     elif len(nb["tries"]) >= state["max_tries"]:
         nb["verdict"], nb["reason"] = "gave_up", f"still failing after {state['max_tries']} tries"
@@ -408,7 +666,15 @@ def cmd_rerun(a):
         return 0
     nb["tries"].append(entry)
     nb["current_first_label"] = e.get("label") if e else None
-    if res["status"] == "ok":
+    local_stop = (nb.get("platforms", {}).get(LOCAL) or {}).get("first_label") == "platform"
+    if nb.get("jh_only") and (res["status"] == "ok" or (local_stop and nb["current_first_label"] == "platform")):
+        # The JupyterHub error cannot be checked here: the local run only shows that nothing else broke.
+        nb["verdict"] = "fixed_unverified_jh"
+        nb["reason"] = ("passes locally" if res["status"] == "ok" else
+                        "runs locally up to the cell that needs a JupyterHub service, as before")
+        print(f"  ✔ {nb['reason']}. Verdict: fixed, not verified on the WEkEO JupyterHub "
+              "(checked by the next weekly JH run).")
+    elif res["status"] == "ok":
         nb["verdict"] = "fixed"
         print("  ✔ passes now. Verdict: fixed.")
     else:
@@ -585,7 +851,22 @@ VERDICT_TEXT = {
     "passed": "passed (not rerun)", "fixed": "fixed", "not_fixable": "not fixable by the LLM",
     "gave_up": "still failing after the try limit", "pending": "not worked on",
     "broken_by_env_change": "broke after an environment change",
+    "fixed_unverified_jh": "fixed, not verified on the WEkEO JupyterHub",
+    "skipped_open_pr": "skipped: an open fix PR already changes it",
+    "no_open_issue": "failing, but no open issue (not worked on)",
 }
+VERDICT_ORDER = ("passed", "fixed", "fixed_unverified_jh", "not_fixable", "gave_up", "broken_by_env_change",
+                 "skipped_open_pr", "no_open_issue", "pending")
+FIXED = ("fixed", "fixed_unverified_jh")
+
+
+def first_line(nb):
+    """The notebook's starting state in one line: the baseline (run mode) or each platform's report (report mode)."""
+    if "platforms" not in nb:
+        return "- Baseline: " + ("passed" if nb["baseline"] == "ok" else nb["baseline_error"].splitlines()[0])
+    return "- Reports: " + "; ".join(
+        f"{p} {r['started_at'][:10]}: " + ("passed" if r["status"] == "ok" else r["error"].splitlines()[0])
+        for p, r in nb["platforms"].items())
 
 
 def cmd_summary(a):
@@ -600,19 +881,35 @@ def cmd_summary(a):
         head = git(root, "rev-parse", "HEAD").stdout.strip()
         if head != info["base_commit"]:
             problems.append(f"{root}: HEAD moved from {info['base_commit'][:7]} to {head[:7]} (no commits allowed)")
+    report_mode = state.get("mode") == "report"
     lines = [f"# Notebook test and fixes – {dt.date.today().isoformat()}", "",
+             f"Mode: {'report (started from existing reports, no baseline run)' if report_mode else 'run'}. "
              f"Profile `{state['profile']}`, fixes: {state['fixes']}, environment fixes: {state['env_fixes']}, "
-             f"max {state['max_tries']} tries per notebook.", "",
-             "| Result | Notebooks |", "|---|---|"]
-    for v in ("passed", "fixed", "not_fixable", "gave_up", "broken_by_env_change", "pending"):
+             f"max {state['max_tries']} tries per notebook.", ""]
+    if report_mode:
+        lines += ["Reports used:"] + [f"- {r['platform']} {r['started_at']}: `{r['path']}`" for r in state["input_reports"]]
+        for name, src in state["sources"].items():
+            if src["head_differs_from"] or src["note"]:
+                lines.append(f"- {name} was worked on at {src['head'][:7]}"
+                             + (f", not the commit of the {', '.join(src['head_differs_from'])} report"
+                                if src["head_differs_from"] else "") + (f"; {src['note']}" if src["note"] else ""))
+        lines.append("")
+    lines += ["| Result | Notebooks |", "|---|---|"]
+    for v in VERDICT_ORDER:
         if counts.get(v):
             lines.append(f"| {VERDICT_TEXT[v]} | {counts[v]} |")
     if problems:
         lines += ["", "**Problems:**"] + [f"- {p}" for p in problems]
+    unverified = sorted(k for k, nb in nbs.items() if nb["verdict"] == "fixed_unverified_jh")
+    if unverified:
+        lines += ["", f"## {JH_UNVERIFIED_HEADING}", "",
+                  "These notebooks failed only on the WEkEO JupyterHub. They were fixed and checked locally; "
+                  "the fix itself is confirmed by the next weekly JupyterHub run.", ""]
+        lines += [f"- {k}: {fix_note(nbs[k])} ({nbs[k]['reason']})" for k in unverified]
     lines += ["", "## Per notebook", ""]
     for key, nb in sorted(nbs.items()):
         lines.append(f"### {key}")
-        lines.append(f"- Baseline: {'passed' if nb['baseline'] == 'ok' else nb['baseline_error'].splitlines()[0]}")
+        lines.append(first_line(nb))
         lines.append(f"- Result: **{VERDICT_TEXT[nb['verdict']]}**" + (f" – {nb['reason']}" if nb["reason"] else ""))
         for t in nb["tries"]:
             lines.append(f"- Try {t['n']}: {t['note']} → {'passed' if t['status'] == 'ok' else t['error'].splitlines()[0]}")
@@ -643,7 +940,7 @@ def cmd_summary(a):
                          + (f", upstream {info['remote']}" if info["remote"] else ""))
             (out / "pr" / f"{name}.md").write_text(pr_text(state, root, info, files))
     for key, nb in nbs.items():
-        if nb["verdict"] != "fixed" and nb["git_root"] in state["repos"] and \
+        if nb["verdict"] not in FIXED and nb["git_root"] in state["repos"] and \
                 Path(nb["path"]).resolve() in {f.resolve() for f in changed_files(nb["git_root"])}:
             review.append(f"{key}: changed but not fixed ({VERDICT_TEXT[nb['verdict']]}); keep only if the change "
                           f"fixes a real error on its own, else `nbfix.py revert`")
@@ -686,17 +983,34 @@ def pr_text(state, root, info, files):
     # The PR lists only what it fixes; remaining errors stay in fix-report.md.
     # A notebook is credited to the repository whose changes fixed it, e.g. a submodule notebook
     # fixed through the superproject's environment file goes to the superproject's PR.
+    # JH-only fixes are fixes too, under their own heading: they are confirmed by the next weekly JupyterHub run.
     changed = {f.resolve() for f in files}
-    fixed = [(k, nb) for k, nb in state["notebooks"].items()
-             if nb["verdict"] == "fixed" and fixed_by(state, nb, changed)]
-    t = [f"Before: {'this notebook' if len(fixed) == 1 else f'these {len(fixed)} notebooks'} failed in the "
-         f"automated notebook test (notebook-test, profile `{state['profile']}`).", "",
-         f"After: {'it runs' if len(fixed) == 1 else 'they run'} without errors.", "", "Fixes:"]
-    for k, nb in fixed:
-        t.append(f"- `{k.split('/', 1)[1]}`: {fix_note(nb)}")
-    if not fixed:
-        t[:4] = []
-        t += [f"- `{os.path.relpath(f, root)}`: changed" for f in files]
+    mine = [(k, nb) for k, nb in state["notebooks"].items() if nb["verdict"] in FIXED and fixed_by(state, nb, changed)]
+    fixed = [(k, nb) for k, nb in mine if nb["verdict"] == "fixed"]
+    unverified = [(k, nb) for k, nb in mine if nb["verdict"] == "fixed_unverified_jh"]
+    if state.get("mode") == "report":
+        where = sorted({p for _, nb in mine for p in nb["failing_platforms"]})
+        names = {LOCAL: "local runs", JH: "WEkEO JupyterHub runs"}
+        test = (f"the weekly automated notebook test (notebook-test, profile `{state['profile']}`, "
+                f"{' and '.join(names.get(p, p + ' runs') for p in where)})")
+    else:
+        test = f"the automated notebook test (notebook-test, profile `{state['profile']}`)"
+    n = len(mine)
+    after = f"{'it runs' if n == 1 else 'they run'} without errors"
+    if unverified:
+        who = ("The notebooks under the last heading" if fixed else "It" if n == 1 else "They")
+        after += (" locally. " if not fixed else ". ") + (
+            f"{who} failed only on the WEkEO JupyterHub and {'was' if who == 'It' else 'were'} checked locally; "
+            f"the next weekly JupyterHub run confirms {'the fix' if who == 'It' else 'those fixes'}")
+    t = [f"Before: {'this notebook' if n == 1 else f'these {n} notebooks'} failed in {test}.", "",
+         f"After: {after}.", ""]
+    if fixed:
+        t += ["Fixes:"] + [f"- `{k.split('/', 1)[1]}`: {fix_note(nb)}" for k, nb in fixed]
+    if unverified:
+        t += ([""] if fixed else []) + [f"{JH_UNVERIFIED_HEADING}:"]
+        t += [f"- `{k.split('/', 1)[1]}`: {fix_note(nb)}" for k, nb in unverified]
+    if not mine:
+        t = ["Fixes:"] + [f"- `{os.path.relpath(f, root)}`: changed" for f in files]
     if any(f.suffix == ".ipynb" for f in files):
         t += ["", "Outputs of changed cells were cleared; all other stored outputs are unchanged."]
     return "\n".join(t) + "\n"
@@ -727,6 +1041,23 @@ def main(argv=None):
     p.add_argument("--timeout", type=int, help="seconds per cell")
     p.add_argument("--force", action="store_true")
     p.set_defaults(func=cmd_baseline)
+
+    p = sub.add_parser("from-reports", help="report mode: start from existing notebook-test reports (no run)")
+    p.add_argument("--report", nargs="+", help="report JSON files (local and/or WEkEO JupyterHub runs)")
+    p.add_argument("--reports-dir", help="folder with reports (e.g. a clone of the results repo): "
+                   "the newest report per platform and repository is used")
+    p.add_argument("--platform", action="append", metavar="NAME=PATH",
+                   help="report at PATH ran on platform NAME (overrides the report's field and the path guess)")
+    p.add_argument("--repo", action="append", metavar="NAME=PATH",
+                   help="use this local clone for repository NAME instead of cloning the report's URL")
+    p.add_argument("--issues", help="issues.json of notebook-test-dashboard: work only on notebooks with an open issue")
+    p.add_argument("--out", required=True, help="folder for the state, reports and hand-over")
+    p.add_argument("--workdir", default="~/notebook-test-work", help="notebook-test work folder (clones go to WORK/repos)")
+    p.add_argument("--profile", default="wekeo")
+    p.add_argument("--env-fixes", choices=["yes", "no"], default="no")
+    p.add_argument("--max-tries", type=int, default=DEFAULT_MAX_TRIES)
+    p.add_argument("--force", action="store_true")
+    p.set_defaults(func=cmd_from_reports)
 
     for name, func in (("triage", cmd_triage), ("clear-outputs", cmd_clear_outputs),
                        ("check-diff", cmd_check_diff), ("summary", cmd_summary)):
