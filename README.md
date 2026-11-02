@@ -7,6 +7,7 @@ Agent Skills that help WEkEO staff create Jupyter notebooks with an AI assistant
 | Skill | What it does | Status |
 |---|---|---|
 | [`jupyter-notebook-author`](skills/jupyter-notebook-author/SKILL.md) | Builds a training notebook in Python or R from your storyline, in the style of a template, and runs it in a test environment before hand-over. | 0.3.0, tested in a blind test with three WEkEO notebooks; script fixes from that test |
+| [`automated-notebook-test`](skills/automated-notebook-test/SKILL.md) | Runs `notebook-test` on notebook repositories, reports which notebooks fail and why, and, if asked, fixes failing notebooks one by one in an uncommitted branch. | 0.1.0, first test on `wekeo4data` (2026-10-22) |
 
 More skills will follow in `skills/`.
 
@@ -56,4 +57,4 @@ Then ask, for example: "Create a training notebook from this storyline."
 - Do not commit notebooks with outputs that contain credentials, or data files.
 
 ## Licence
-MIT, see `LICENSE`. The scripts depend only on permissively licensed packages (nbformat, nbclient, jupyter_client, ipykernel, traitlets, jupyter_core, pyzmq: BSD-3-Clause; jsonschema: MIT; tornado: Apache-2.0). Notebooks you create get the licence you choose at intake; the skill checks that their packages fit it.
+MIT, see `LICENSE`. The scripts depend only on permissively licensed packages (nbformat, nbclient, jupyter_client, ipykernel, traitlets, jupyter_core, pyzmq: BSD-3-Clause; jsonschema: MIT; tornado: Apache-2.0); `automated-notebook-test` also uses PyYAML (MIT), `hda` (Apache-2.0) and `notebook-test`. Notebooks you create get the licence you choose at intake; the skill checks that their packages fit it.
